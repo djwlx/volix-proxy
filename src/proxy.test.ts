@@ -190,12 +190,14 @@ describe('GET /proxy', () => {
     expect(logMessages[0]).toContain('"event":"proxy_request"')
     expect(logMessages[0]).toContain('"targetHost":"cdnfhnfile.115cdn.net"')
     expect(logMessages[0]).toContain('"targetPath":"/path/to/file.jpg"')
+    expect(logMessages[0]).toContain('"upstreamUserAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"')
     expect(logMessages[0]).not.toContain('1780456685')
     expect(logMessages[0]).not.toContain('secret')
 
     expect(logMessages[1]).toContain('"event":"proxy_response"')
     expect(logMessages[1]).toContain('"status":200')
     expect(logMessages[1]).toContain('"contentType":"image/jpeg"')
+    expect(logMessages[1]).toContain('"upstreamUserAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"')
   })
 
   it('rejects non-image upstream responses', async () => {
@@ -215,6 +217,27 @@ describe('GET /proxy', () => {
     const response = await app.request(`http://local.test/proxy?url=${upstreamUrl}&cache=0`)
 
     expect(response.status).toBe(415)
+  })
+
+  it('allows octet-stream responses for 115 upstream hosts', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('image-body', {
+          status: 200,
+          headers: {
+            'content-type': 'application/octet-stream',
+          },
+        })
+      )
+    )
+
+    const upstreamUrl = encodeURIComponent('https://cdnfhnfile.115cdn.net/file.jpg')
+    const response = await app.request(`http://local.test/proxy?url=${upstreamUrl}&cache=0`)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/octet-stream')
+    expect(await response.text()).toBe('image-body')
   })
 
   it('serves a cached response when cache is enabled', async () => {

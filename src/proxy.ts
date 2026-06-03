@@ -63,6 +63,20 @@ const is115Hostname = (hostname: string) => {
   return hostname.includes('115')
 }
 
+const resolveUpstreamUserAgent = (requestHeaders: Headers, targetUrl: URL, forwardedUserAgent?: string | null) => {
+  const safeForwardedUserAgent = String(forwardedUserAgent || '').trim()
+  if (safeForwardedUserAgent) {
+    return safeForwardedUserAgent
+  }
+
+  const sourceUserAgent = String(requestHeaders.get('user-agent') || '').trim()
+  if (sourceUserAgent) {
+    return sourceUserAgent
+  }
+
+  return is115Hostname(targetUrl.hostname) ? DEFAULT_115_USER_AGENT : DEFAULT_UPSTREAM_USER_AGENT
+}
+
 const buildUpstreamHeaders = (requestHeaders: Headers, targetUrl: URL, forwardedUserAgent?: string | null) => {
   const headers = new Headers()
 
@@ -77,12 +91,7 @@ const buildUpstreamHeaders = (requestHeaders: Headers, targetUrl: URL, forwarded
     headers.set('accept', DEFAULT_IMAGE_ACCEPT_HEADER)
   }
 
-  const safeForwardedUserAgent = String(forwardedUserAgent || '').trim()
-  if (safeForwardedUserAgent) {
-    headers.set('user-agent', safeForwardedUserAgent)
-  } else if (!headers.has('user-agent')) {
-    headers.set('user-agent', is115Hostname(targetUrl.hostname) ? DEFAULT_115_USER_AGENT : DEFAULT_UPSTREAM_USER_AGENT)
-  }
+  headers.set('user-agent', resolveUpstreamUserAgent(requestHeaders, targetUrl, forwardedUserAgent))
   return headers
 }
 
@@ -107,6 +116,11 @@ const buildResponseHeaders = (upstreamHeaders: Headers) => {
 const isImageResponse = (response: Response) => {
   const contentType = response.headers.get('content-type') || ''
   return contentType.toLowerCase().startsWith('image/')
+}
+
+const isAllowed115Response = (targetUrl: URL, response: Response) => {
+  const contentType = (response.headers.get('content-type') || '').toLowerCase()
+  return is115Hostname(targetUrl.hostname) && contentType.startsWith('application/octet-stream')
 }
 
 const resolveCache = () => {
@@ -134,9 +148,8 @@ export const handleProxyRequest = async (request: Request) => {
     is115Host: targetUrl ? is115Hostname(targetUrl.hostname) : false,
   }
 
-  logInfo('proxy_request', requestLog)
-
   if (!targetUrl) {
+    logInfo('proxy_request', requestLog)
     logError('proxy_rejected', {
       ...requestLog,
       status: 400,
@@ -146,6 +159,7 @@ export const handleProxyRequest = async (request: Request) => {
   }
 
   if (targetUrl.host === currentUrl.host) {
+    logInfo('proxy_request', requestLog)
     logError('proxy_rejected', {
       ...requestLog,
       status: 400,
@@ -156,6 +170,9 @@ export const handleProxyRequest = async (request: Request) => {
 
   const cache = resolveCache()
   const upstreamHeaders = buildUpstreamHeaders(request.headers, targetUrl, forwardedUserAgent)
+  const upstreamUserAgent = upstreamHeaders.get('user-agent') || ''
+  requestLog.upstreamUserAgent = upstreamUserAgent
+  logInfo('proxy_request', requestLog)
   const cacheKey = new Request(targetUrl.toString(), {
     method: 'GET',
     headers: upstreamHeaders,
@@ -191,7 +208,7 @@ export const handleProxyRequest = async (request: Request) => {
     return jsonError(502, 'upstream_fetch_failed', 'Failed to fetch the upstream resource.')
   }
 
-  if (upstreamResponse.ok && !isImageResponse(upstreamResponse)) {
+  if (upstreamResponse.ok && !isImageResponse(upstreamResponse) && !isAllowed115Response(targetUrl, upstreamResponse)) {
     logError('proxy_response', {
       ...requestLog,
       status: 415,
