@@ -79,6 +79,73 @@ describe('GET /proxy', () => {
     expect(headers.get('user-agent')).toContain('Mozilla/5.0')
   })
 
+  it('forwards the incoming user-agent to upstream requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('image-body', {
+        status: 200,
+        headers: {
+          'content-type': 'image/jpeg',
+        },
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const upstreamUrl = encodeURIComponent('https://cdnfhnfile.115.com/file.jpg')
+    const request = new Request(`http://local.test/proxy?url=${upstreamUrl}&cache=0`, {
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+      },
+    })
+
+    await app.request(request)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const headers = new Headers(init?.headers)
+    expect(headers.get('user-agent')).toBe(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
+    )
+  })
+
+  it('logs request and result details without upstream query params', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('image-body', {
+        status: 200,
+        headers: {
+          'content-type': 'image/jpeg',
+        },
+      })
+    )
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.stubGlobal('fetch', fetchMock)
+
+    const upstreamUrl = encodeURIComponent(
+      'https://cdnfhnfile.115cdn.net/path/to/file.jpg?t=1780456685&u=100284233&k=secret'
+    )
+    const request = new Request(`http://local.test/proxy?url=${upstreamUrl}&cache=0`, {
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+      },
+    })
+
+    await app.request(request)
+
+    expect(logSpy).toHaveBeenCalledTimes(2)
+    const logMessages = logSpy.mock.calls.map(([message]) => String(message))
+
+    expect(logMessages[0]).toContain('"event":"proxy_request"')
+    expect(logMessages[0]).toContain('"targetHost":"cdnfhnfile.115cdn.net"')
+    expect(logMessages[0]).toContain('"targetPath":"/path/to/file.jpg"')
+    expect(logMessages[0]).not.toContain('1780456685')
+    expect(logMessages[0]).not.toContain('secret')
+
+    expect(logMessages[1]).toContain('"event":"proxy_response"')
+    expect(logMessages[1]).toContain('"status":200')
+    expect(logMessages[1]).toContain('"contentType":"image/jpeg"')
+  })
+
   it('rejects non-image upstream responses', async () => {
     vi.stubGlobal(
       'fetch',

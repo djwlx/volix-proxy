@@ -14,7 +14,33 @@ const jsonError = (status: number, error: string, message: string) => {
   })
 }
 
-const FORWARDED_REQUEST_HEADERS = ['accept', 'if-none-match', 'if-modified-since', 'range']
+const createRequestId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+const logInfo = (event: string, payload: Record<string, unknown>) => {
+  console.log(
+    JSON.stringify({
+      event,
+      ...payload,
+    })
+  )
+}
+
+const logError = (event: string, payload: Record<string, unknown>) => {
+  console.error(
+    JSON.stringify({
+      event,
+      ...payload,
+    })
+  )
+}
+
+const FORWARDED_REQUEST_HEADERS = ['accept', 'if-none-match', 'if-modified-since', 'range', 'user-agent']
 
 const normalizeHttpUrl = (value: string) => {
   const raw = String(value || '').trim()
@@ -51,7 +77,9 @@ const buildUpstreamHeaders = (requestHeaders: Headers, targetUrl: URL) => {
     headers.set('accept', DEFAULT_IMAGE_ACCEPT_HEADER)
   }
 
-  headers.set('user-agent', is115Hostname(targetUrl.hostname) ? DEFAULT_115_USER_AGENT : DEFAULT_UPSTREAM_USER_AGENT)
+  if (!headers.has('user-agent')) {
+    headers.set('user-agent', is115Hostname(targetUrl.hostname) ? DEFAULT_115_USER_AGENT : DEFAULT_UPSTREAM_USER_AGENT)
+  }
   return headers
 }
 
@@ -89,24 +117,54 @@ export const handleProxyRequest = async (request: Request) => {
   const currentUrl = new URL(request.url)
   const targetUrl = normalizeHttpUrl(currentUrl.searchParams.get('url') || '')
   const useCache = currentUrl.searchParams.get('cache') !== '0'
+  const requestId = createRequestId()
+  const requestLog = {
+    requestId,
+    method: request.method,
+    route: currentUrl.pathname,
+    cache: useCache,
+    sourceUserAgent: request.headers.get('user-agent') || '',
+    targetHost: targetUrl?.host || null,
+    targetPath: targetUrl?.pathname || null,
+    is115Host: targetUrl ? is115Hostname(targetUrl.hostname) : false,
+  }
+
+  logInfo('proxy_request', requestLog)
 
   if (!targetUrl) {
+    logError('proxy_rejected', {
+      ...requestLog,
+      status: 400,
+      error: 'invalid_url',
+    })
     return jsonError(400, 'invalid_url', 'A valid http/https url query parameter is required.')
   }
 
   if (targetUrl.host === currentUrl.host) {
+    logError('proxy_rejected', {
+      ...requestLog,
+      status: 400,
+      error: 'self_proxy_forbidden',
+    })
     return jsonError(400, 'self_proxy_forbidden', 'Proxying this worker from itself is not allowed.')
   }
 
   const cache = resolveCache()
+  const upstreamHeaders = buildUpstreamHeaders(request.headers, targetUrl)
   const cacheKey = new Request(targetUrl.toString(), {
     method: 'GET',
-    headers: buildUpstreamHeaders(request.headers, targetUrl),
+    headers: upstreamHeaders,
   })
 
   if (useCache && cache) {
     const cachedResponse = await cache.match(cacheKey)
     if (cachedResponse) {
+      logInfo('proxy_response', {
+        ...requestLog,
+        status: cachedResponse.status,
+        contentType: cachedResponse.headers.get('content-type') || '',
+        cacheStatus: 'hit',
+      })
       return cachedResponse
     }
   }
@@ -116,13 +174,26 @@ export const handleProxyRequest = async (request: Request) => {
   try {
     upstreamResponse = await fetch(targetUrl, {
       method: 'GET',
-      headers: buildUpstreamHeaders(request.headers, targetUrl),
+      headers: upstreamHeaders,
     })
   } catch {
+    logError('proxy_response', {
+      ...requestLog,
+      status: 502,
+      error: 'upstream_fetch_failed',
+      cacheStatus: useCache && cache ? 'miss' : 'bypass',
+    })
     return jsonError(502, 'upstream_fetch_failed', 'Failed to fetch the upstream resource.')
   }
 
   if (upstreamResponse.ok && !isImageResponse(upstreamResponse)) {
+    logError('proxy_response', {
+      ...requestLog,
+      status: 415,
+      error: 'unsupported_media_type',
+      contentType: upstreamResponse.headers.get('content-type') || '',
+      cacheStatus: useCache && cache ? 'miss' : 'bypass',
+    })
     return jsonError(415, 'unsupported_media_type', 'Only image upstream responses are supported right now.')
   }
 
@@ -134,6 +205,13 @@ export const handleProxyRequest = async (request: Request) => {
   if (useCache && cache && upstreamResponse.ok && isImageResponse(upstreamResponse)) {
     await cache.put(cacheKey, proxiedResponse.clone())
   }
+
+  logInfo('proxy_response', {
+    ...requestLog,
+    status: proxiedResponse.status,
+    contentType: proxiedResponse.headers.get('content-type') || '',
+    cacheStatus: useCache && cache ? 'miss' : 'bypass',
+  })
 
   return proxiedResponse
 }
