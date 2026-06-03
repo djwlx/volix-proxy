@@ -63,7 +63,7 @@ const is115Hostname = (hostname: string) => {
   return hostname.includes('115')
 }
 
-const buildUpstreamHeaders = (requestHeaders: Headers, targetUrl: URL) => {
+const buildUpstreamHeaders = (requestHeaders: Headers, targetUrl: URL, forwardedUserAgent?: string | null) => {
   const headers = new Headers()
 
   for (const headerName of FORWARDED_REQUEST_HEADERS) {
@@ -77,7 +77,10 @@ const buildUpstreamHeaders = (requestHeaders: Headers, targetUrl: URL) => {
     headers.set('accept', DEFAULT_IMAGE_ACCEPT_HEADER)
   }
 
-  if (!headers.has('user-agent')) {
+  const safeForwardedUserAgent = String(forwardedUserAgent || '').trim()
+  if (safeForwardedUserAgent) {
+    headers.set('user-agent', safeForwardedUserAgent)
+  } else if (!headers.has('user-agent')) {
     headers.set('user-agent', is115Hostname(targetUrl.hostname) ? DEFAULT_115_USER_AGENT : DEFAULT_UPSTREAM_USER_AGENT)
   }
   return headers
@@ -117,6 +120,7 @@ export const handleProxyRequest = async (request: Request) => {
   const currentUrl = new URL(request.url)
   const targetUrl = normalizeHttpUrl(currentUrl.searchParams.get('url') || '')
   const useCache = currentUrl.searchParams.get('cache') !== '0'
+  const forwardedUserAgent = currentUrl.searchParams.get('ua')
   const requestId = createRequestId()
   const requestLog = {
     requestId,
@@ -124,6 +128,7 @@ export const handleProxyRequest = async (request: Request) => {
     route: currentUrl.pathname,
     cache: useCache,
     sourceUserAgent: request.headers.get('user-agent') || '',
+    forwardedUserAgent: forwardedUserAgent || '',
     targetHost: targetUrl?.host || null,
     targetPath: targetUrl?.pathname || null,
     is115Host: targetUrl ? is115Hostname(targetUrl.hostname) : false,
@@ -150,7 +155,7 @@ export const handleProxyRequest = async (request: Request) => {
   }
 
   const cache = resolveCache()
-  const upstreamHeaders = buildUpstreamHeaders(request.headers, targetUrl)
+  const upstreamHeaders = buildUpstreamHeaders(request.headers, targetUrl, forwardedUserAgent)
   const cacheKey = new Request(targetUrl.toString(), {
     method: 'GET',
     headers: upstreamHeaders,

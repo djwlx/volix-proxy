@@ -108,6 +108,37 @@ describe('GET /proxy', () => {
     )
   })
 
+  it('prefers the explicit ua query parameter for upstream requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('image-body', {
+        status: 200,
+        headers: {
+          'content-type': 'image/jpeg',
+        },
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const upstreamUrl = encodeURIComponent('https://cdnfhnfile.115.com/file.jpg')
+    const forwardedUserAgent = encodeURIComponent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Volix/Proxy'
+    )
+    const request = new Request(`http://local.test/proxy?url=${upstreamUrl}&cache=0&ua=${forwardedUserAgent}`, {
+      headers: {
+        'user-agent': 'DifferentBrowser/1.0',
+      },
+    })
+
+    await app.request(request)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const headers = new Headers(init?.headers)
+    expect(headers.get('user-agent')).toBe(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Volix/Proxy'
+    )
+  })
+
   it('logs request and result details without upstream query params', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('image-body', {
