@@ -19,6 +19,27 @@ describe('GET /healthz', () => {
 })
 
 describe('GET /proxy', () => {
+  it('accepts the root route as a proxy entry when url is present', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('image-body', {
+          status: 200,
+          headers: {
+            'content-type': 'image/jpeg',
+          },
+        })
+      )
+    )
+
+    const upstreamUrl = encodeURIComponent('https://img.example.com/a.jpg')
+    const response = await app.request(`http://local.test/?url=${upstreamUrl}&cache=0`)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('image/jpeg')
+    expect(await response.text()).toBe('image-body')
+  })
+
   it('rejects missing url', async () => {
     const response = await app.request('http://local.test/proxy')
 

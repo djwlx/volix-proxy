@@ -7,6 +7,9 @@ const app = new Hono()
 app.use(renderer)
 
 app.get('/', (c) => {
+  if (c.req.query('url')) {
+    return handleProxyRequest(c.req.raw)
+  }
   return c.render(<h1>Hello!</h1>)
 })
 
